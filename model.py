@@ -198,9 +198,7 @@ class GradientBoostingEnsemble:
       selected_rows = rows[rows_gbf] if tree_index > 0 else rows
 
       # Compute sensitivity
-      delta_g = ((3 * self.l2_lambda + 2) / (
-          (self.l2_lambda + 1) * (self.l2_lambda + 2))) * np.square(
-              self.l2_threshold)
+      delta_g = 3 * np.square(self.l2_threshold)
       delta_v = min(self.l2_threshold / (1 + self.l2_lambda),
                     2 * self.l2_threshold * math.pow(
                         (1 - self.learning_rate), tree_index))
