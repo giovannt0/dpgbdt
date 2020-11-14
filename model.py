@@ -130,8 +130,9 @@ class GradientBoostingEnsemble:
     # Train all trees
     for tree_index in range(self.nb_trees):
       if tree_index == 0:
-        # First tree, start with initial scores (mean of label)
-        gradients = self.init_score
+        # First tree, start with initial scores (mean of labels)
+        gradients = self.ComputeGradientForLossFunction(
+            y, self.init_score[:len(y)])
       else:
         # Update gradients of all training instances on loss l
         if update_gradients:
@@ -187,12 +188,11 @@ class GradientBoostingEnsemble:
       assert gradients is not None
       gradients_tree = gradients[rows]
 
-      if tree_index > 0:
-        # Gradient based data filtering
-        norm_1_gradient = np.abs(gradients_tree)
-        rows_gbf = norm_1_gradient <= self.l2_threshold
-        X_tree = X_tree[rows_gbf, :]
-        gradients_tree = gradients_tree[rows_gbf]
+      # Gradient based data filtering
+      norm_1_gradient = np.abs(gradients_tree)
+      rows_gbf = norm_1_gradient <= self.l2_threshold
+      X_tree = X_tree[rows_gbf, :]
+      gradients_tree = gradients_tree[rows_gbf]
 
       # Get back the original row index from the first filtering
       selected_rows = rows[rows_gbf] if tree_index > 0 else rows
