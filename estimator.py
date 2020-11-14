@@ -21,6 +21,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
                nb_trees_per_ensemble: int,
                max_depth: int,
                learning_rate: float,
+               n_classes: int = None,
                max_leaves: Optional[int] = None,
                min_samples_split: int = 2,
                balance_partition: bool = True,
@@ -37,6 +38,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
       nb_trees_per_ensemble (int): The number of trees per ensemble.
       max_depth (int): The max depth for the trees.
       learning_rate (float): The learning rate.
+      n_classes (int): Number of classes. Triggers regression (None) vs classification.
       max_leaves (int): Optional. The max number of leaf nodes for the trees.
           Tree will grow in a best-leaf first fashion until it contains
           max_leaves or until it reaches maximum depth, whichever comes first.
@@ -75,6 +77,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
     self.model = GradientBoostingEnsemble(
         self.nb_trees,
         self.nb_trees_per_ensemble,
+        n_classes=n_classes,
         max_depth=self.max_depth,
         privacy_budget=self.privacy_budget,
         learning_rate=self.learning_rate,
@@ -109,16 +112,20 @@ class DPGBDT(BaseEstimator):  # type: ignore
       np.array: The predictions.
     """
     assert self.model
-    reg_preds = self.model.Predict(X)
-    if not self.binary_classification:
-      return reg_preds
-    class_preds = []
-    for reg in reg_preds:
-      if reg < 0:
-        class_preds.append(-1)
-      else:
-        class_preds.append(1)
-    return class_preds
+    try:
+      preds = self.model.PredictLabels(X)
+    except ValueError:
+      preds = self.model.Predict(X)
+    return preds
+#    if not self.binary_classification:
+#      return reg_preds
+#    class_preds = []
+#    for reg in reg_preds:
+#      if reg < 0:
+#        class_preds.append(-1)
+#      else:
+#        class_preds.append(1)
+#    return class_preds
 
   def get_params(
       self,
