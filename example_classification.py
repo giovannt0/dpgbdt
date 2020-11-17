@@ -20,7 +20,7 @@ model = DPGBDT(
     nb_trees=50,
     nb_trees_per_ensemble=50,
     max_depth=3,
-    use_3_trees=True,
+    use_3_trees=False,
     learning_rate=0.1,
 )
 model.fit(X_train, y_train)

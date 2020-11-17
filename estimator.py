@@ -21,7 +21,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
                nb_trees_per_ensemble: int,
                max_depth: int,
                learning_rate: float,
-               n_classes: int = None,
+               n_classes: Optional[int] = None,
                max_leaves: Optional[int] = None,
                min_samples_split: int = 2,
                balance_partition: bool = True,
@@ -112,20 +112,18 @@ class DPGBDT(BaseEstimator):  # type: ignore
       np.array: The predictions.
     """
     assert self.model
+    # try (multi-class) classification output first,
+    # ow fallback to the raw regression values
     try:
-      preds = self.model.PredictLabels(X)
+      return self.model.PredictLabels(X)
     except ValueError:
-      preds = self.model.Predict(X)
-    return preds
-#    if not self.binary_classification:
-#      return reg_preds
-#    class_preds = []
-#    for reg in reg_preds:
-#      if reg < 0:
-#        class_preds.append(-1)
-#      else:
-#        class_preds.append(1)
-#    return class_preds
+      reg_preds = self.model.Predict(X).squeeze()  # shape: (n_samples,)
+      # binary classification is here conducted by regression
+      # and not by the deviance loss (could be improved later)
+      if not self.binary_classification:
+        return reg_preds
+      else:
+        return np.where(reg_preds < 0, -1, 1)
 
   def get_params(
       self,

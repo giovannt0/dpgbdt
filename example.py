@@ -44,6 +44,11 @@ if __name__ == '__main__':
   X, y, cat_idx, num_idx = get_abalone()
   X_train, X_test, y_train, y_test = train_test_split(X, y)
 
+  # A simple baseline: mean of the training set
+  y_pred = np.mean(y_train).repeat(len(y_test))
+  print('Mean - RMSE: {0:f}'.format(
+    np.sqrt(np.mean(np.square(y_pred - y_test)))))
+
   # Train the model using a depth-first approach
   model = estimator.DPGBDT(privacy_budget=0.1,
                            nb_trees=50,

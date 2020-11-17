@@ -40,7 +40,7 @@ class GradientBoostingEnsemble:
   def __init__(self,
                nb_trees: int,
                nb_trees_per_ensemble: int,
-               n_classes: int = None,
+               n_classes: Optional[int] = None,
                max_depth: int = 6,
                privacy_budget: float = 1.0,
                learning_rate: float = 0.1,
@@ -190,7 +190,10 @@ class GradientBoostingEnsemble:
       # Select <number_of_rows> rows at random from the ensemble dataset
       rows = np.random.randint(len(X_ensemble), size=number_of_rows)
       X_tree = X_ensemble[rows, :]
-      k_trees = []
+
+      # train for each class a seperate tree on the same rows.
+      # In regression or binary classification, K has been set to one.
+      k_trees = []  # type: List[DifferentiallyPrivateTree]
       for kth_tree in range(self.loss_.K):
         if tree_index == 0:
             # First tree, start with initial scores (mean of labels)
@@ -231,8 +234,11 @@ class GradientBoostingEnsemble:
             use_3_trees=self.use_3_trees,
             cat_idx=self.cat_idx,
             num_idx=self.num_idx)
+        # in multi-class classification, the target has to be binary
+        # as each tree is a per-class regressor
         tree.Fit(X_tree,
-                 (y_ensemble == kth_tree).astype(np.float64) if self.loss_.is_multi_class else y_ensemble,
+                 (y_ensemble == kth_tree).astype(np.float64) if self.loss_.is_multi_class
+                 else y_ensemble,
                  gradients_tree)
 
         # Add the tree to its corresponding ensemble
@@ -267,9 +273,10 @@ class GradientBoostingEnsemble:
     """
 
     self.trees = []  # Re-init final predictions trees
-    for index, k_three_tree in enumerate(k_trees):
-      k_trees_ = []
-      for k, three_tree in enumerate(k_three_tree):
+    for index, k_three_tree in enumerate(k_trees):  # iterate through the ensemble
+      k_trees_ = []  # type: List[DifferentiallyPrivateTree]
+      for k, three_tree in enumerate(k_three_tree):  # iterate through the classes
+        # select a whole ensemble per class; continue as if there were only one class
         copy = list(np.copy([i[k] for i in k_trees]))
         copy.pop(index)
         if len(copy) == 0:
@@ -362,23 +369,8 @@ class GradientBoostingEnsemble:
     rhs = np.where(rhs_op(node.X[:, index], value))[0]
 
     # Compute the associated predictions
-    if self.loss_.is_multi_class and len(node.gradients[lhs]) > 0:
-      lhs_prediction = -1 * np.sum(node.gradients[lhs]) * (self.loss_.K - 1) / self.loss_.K
-      lhs_prediction /= np.sum(
-        (node.y[lhs] + node.gradients[lhs]) * (1 - node.y[lhs] - node.gradients[lhs])
-      ) + self.l2_lambda
-    else:
-      lhs_prediction = (-1 * np.sum(node.gradients[lhs]) / (len(
-          node.gradients[lhs]) + self.l2_lambda))  # type: float
-
-    if self.loss_.is_multi_class and len(node.gradients[rhs]) > 0:
-      rhs_prediction = -1 * np.sum(node.gradients[rhs]) * (self.loss_.K - 1) / self.loss_.K
-      rhs_prediction /= np.sum(
-        (node.y[rhs] + node.gradients[rhs]) * (1 - node.y[rhs] - node.gradients[rhs])
-      ) + self.l2_lambda
-    else:
-      rhs_prediction = (-1 * np.sum(node.gradients[rhs]) / (len(
-          node.gradients[rhs]) + self.l2_lambda))  # type: float
+    lhs_prediction = ComputePredictions(node.gradients[lhs], node.y[lhs], self.loss_, self.l2_lambda)
+    rhs_prediction = ComputePredictions(node.gradients[rhs], node.y[rhs], self.loss_, self.l2_lambda)
 
     # Mark current node as split node and not leaf node
     node.prediction = None
@@ -422,15 +414,17 @@ class GradientBoostingEnsemble:
       X (np.array): The dataset for which to predict values.
 
     Returns:
-      np.array: The predictions.
+      np.array of shape (n_samples, K): The predictions.
     """
+    # sum across the ensemble per class
     predictions = np.sum([[tree.Predict(X) for tree in k_trees] for k_trees in self.trees], axis=0).T
     assert self.init_score is not None
     init_score = self.init_score[:len(predictions)]
     return np.add(init_score, predictions)
 
   def PredictLabels(self, X: np.ndarray) -> np.ndarray:
-    """Predict labels out of the raw prediction values of `Predict`. Only defined for classification tasks.
+    """Predict labels out of the raw prediction values of `Predict`.
+    Only defined for classification tasks.
 
     Args:
       X (np.ndarray): The dataset for which to predict labels.
@@ -458,6 +452,8 @@ class GradientBoostingEnsemble:
     """
     if self.loss_.is_multi_class:
       y = (y == k).astype(np.float64)
+    # sklearn's impl is using the negative gradient (i.e. y - F).
+    # Here the positive gradient is used though
     return -self.loss_.negative_gradient(y, y_pred, k=k)
 
   def GetOperators(self, index: int) -> Tuple[Any, Any]:
@@ -550,6 +546,8 @@ class DifferentiallyPrivateTree:
     privacy_budget (float): The tree's privacy budget.
     delta_g (float): The utility function's sensitivity.
     delta_v (float): The sensitivity for leaf clipping.
+    loss (LossFunction): An sklearn loss wrapper
+        suitable for regression and classification.
     max_depth (int): Max. depth for the tree.
   """
   # pylint: disable=invalid-name,too-many-arguments
@@ -580,6 +578,9 @@ class DifferentiallyPrivateTree:
       privacy_budget (float): The tree's privacy budget.
       delta_g (float): The utility function's sensitivity.
       delta_v (float): The sensitivity for leaf clipping.
+      loss (LossFunction): An sklearn loss wrapper
+          suitable for regression and classification.
+          Valid options are: `LeastSquaresError` or `MultinomialDeviance`.
       max_depth (int): Optional. Max. depth for the tree. Default is 6.
       max_leaves (int): Optional. The max number of leaf nodes for the trees.
           Tree will grow in a best-leaf first fashion until it contains
@@ -595,6 +596,8 @@ class DifferentiallyPrivateTree:
       cat_idx (List): Optional. List of indices for categorical features.
       num_idx (List): Optional. List of indices for numerical features.
     """
+    assert type(loss) in [LeastSquaresError, MultinomialDeviance]
+
     self.root_node = None  # type: Optional[DecisionNode]
     self.nodes_bfs = Queue()  # type: Queue[DecisionNode]
     self.nodes = []  # type: List[DecisionNode]
@@ -910,14 +913,7 @@ class DifferentiallyPrivateTree:
     Returns:
       float: The prediction for the leaf node
     """
-    if self.loss.is_multi_class and len(gradients) > 0:
-      prediction = -1 * np.sum(gradients) * (self.loss.K - 1) / self.loss.K
-      prediction /= np.sum((y + gradients) * (1 - y - gradients)) + self.l2_lambda
-    else:
-      prediction = (-1 * np.sum(gradients) / (len(
-          gradients) + self.l2_lambda))  # type: float
-
-    return prediction
+    return ComputePredictions(gradients, y, self.loss, self.l2_lambda)
 
   def Predict(self, X: np.array) -> np.array:
     """Return predictions for a list of input data.
@@ -1050,6 +1046,44 @@ def Shrink(leaves: List[DecisionNode],
   for leaf in leaves:
     assert leaf.prediction is not None
     leaf.prediction *= learning_rate
+
+
+def ComputePredictions(gradients: np.ndarray,
+                       y: np.ndarray,
+                       loss: LossFunction,
+                       l2_lambda: float) -> float:
+  """Computes the predictions of a leaf.
+
+  Used in the `DifferentiallyPrivateTree` as well as in `SplitNode`
+  for the 3-tree version.
+
+  Ref:
+    Friedman 01. "Greedy function approximation: A gradient boosting machine."
+      (https://projecteuclid.org/euclid.aos/1013203451)
+
+  Args:
+    gradients (np.ndarray): The gradients for the dataset instances.
+    y (np.ndarray): The dataset labels.
+    loss (LossFunction): An sklearn loss wrapper
+        suitable for regression and classification.
+    l2_lambda (float): Regularization parameter for l2 loss function.
+
+  Returns:
+    Prediction of a leaf
+  """
+  if len(gradients) == 0:
+    prediction = 0.
+  elif loss.is_multi_class:
+    # sum of neg. gradients divided by sum of 2nd derivatives
+    # aka one Newton-Raphson step
+    # for details ref. (eq 33) in Friedman 01.
+    prediction = np.sum(gradients) * (loss.K - 1) / loss.K  # type: float
+    prediction /= np.sum((y - gradients) * (1 - y + gradients)) + l2_lambda
+    # TODO: Verify on whether this l2-regularization is correct as is
+  else:
+    prediction = (-1 * np.sum(gradients) / (len(
+      gradients) + l2_lambda))  # type: float
+  return prediction
 
 
 def ExponentialMechanism(
