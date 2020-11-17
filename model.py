@@ -132,6 +132,16 @@ class GradientBoostingEnsemble:
     # Number of ensembles in the model
     nb_ensembles = int(np.ceil(self.nb_trees / self.nb_trees_per_ensemble))
 
+    # Privacy budget allocated to all trees in each ensemble
+    tree_privacy_budget = np.divide(self.privacy_budget, nb_ensembles)
+    # In multi-class classification the budget for each tree
+    # is the same as for the whole K trees but halved
+    # As each datapoint is only assigned to one class,
+    # it only matters if it is assigned to the considered class or not but not to which other
+    # Thus it always remains 2 - independently of how many total classes exists
+    privacy_budget_per_tree = 2 if self.loss_.is_multi_class else 1
+    tree_privacy_budget = np.divide(tree_privacy_budget, privacy_budget_per_tree)
+
     prev_score = np.inf
 
     # Train all trees
@@ -141,9 +151,6 @@ class GradientBoostingEnsemble:
       delta_v = min(self.l2_threshold / (1 + self.l2_lambda),
                     2 * self.l2_threshold * math.pow(
                       (1 - self.learning_rate), tree_index))
-
-      # Privacy budget allocated to each tree
-      tree_privacy_budget = np.divide(self.privacy_budget, nb_ensembles * self.loss_.K)
 
       current_tree_for_ensemble = tree_index % self.nb_trees_per_ensemble
       if current_tree_for_ensemble == 0:

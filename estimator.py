@@ -113,7 +113,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
     """
     assert self.model
     # try (multi-class) classification output first,
-    # ow fallback to the raw regression values
+    # o.w. fallback to the raw regression values
     try:
       return self.model.PredictLabels(X)
     except ValueError:
