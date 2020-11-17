@@ -236,10 +236,10 @@ class GradientBoostingEnsemble:
             num_idx=self.num_idx)
         # in multi-class classification, the target has to be binary
         # as each tree is a per-class regressor
-        tree.Fit(X_tree,
-                 (y_ensemble == kth_tree).astype(np.float64) if self.loss_.is_multi_class
-                 else y_ensemble,
-                 gradients_tree)
+        y_target = ((y_ensemble == kth_tree).astype(np.float64)
+                    if self.loss_.is_multi_class
+                    else y_ensemble)
+        tree.Fit(X_tree, y_target, gradients_tree)
 
         # Add the tree to its corresponding ensemble
         k_trees.append(tree)
