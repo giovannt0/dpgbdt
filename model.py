@@ -1083,9 +1083,9 @@ def ComputePredictions(gradients: np.ndarray,
   elif loss.is_multi_class:
     # sum of neg. gradients divided by sum of 2nd derivatives
     # aka one Newton-Raphson step
-    # for details ref. (eq 33) in Friedman 01.
-    prediction = np.sum(gradients) * (loss.K - 1) / loss.K  # type: float
-    prediction /= np.sum((y - gradients) * (1 - y + gradients)) + l2_lambda
+    # for details ref. (eq 32) in Friedman 01.
+    prediction = -1 * np.sum(gradients) * (loss.K - 1) / loss.K  # type: float
+    prediction /= np.sum(np.abs(gradients) * (1 - np.abs(gradients))) + l2_lambda
     # TODO: Verify on whether this l2-regularization is correct as is
   else:
     prediction = (-1 * np.sum(gradients) / (len(
