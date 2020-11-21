@@ -33,7 +33,7 @@ class GradientBoostingEnsemble:
         function (default), this is 1.
     l2_lambda (float): Regularization parameter for l2 loss function.
         For the square loss function (default), this is 0.1.
-    trees (List[DifferentiallyPrivateTree]): A list of DP trees.
+    trees (List[List[DifferentiallyPrivateTree]]): A list of k-classes DP trees
   """
   # pylint: disable=invalid-name, too-many-arguments, unused-variable
 
