@@ -33,7 +33,7 @@ class GradientBoostingEnsemble:
         function (default), this is 1.
     l2_lambda (float): Regularization parameter for l2 loss function.
         For the square loss function (default), this is 0.1.
-    trees (List[List[DifferentiallyPrivateTree]]): A list of k-classes DP trees
+    trees (List[List[DifferentiallyPrivateTree]]): A list of k-classes DP trees.
   """
   # pylint: disable=invalid-name, too-many-arguments, unused-variable
 
@@ -197,6 +197,7 @@ class GradientBoostingEnsemble:
       # Select <number_of_rows> rows at random from the ensemble dataset
       rows = np.random.randint(len(X_ensemble), size=number_of_rows)
       X_tree = X_ensemble[rows, :]
+      y_tree = y_ensemble[rows]
 
       # train for each class a seperate tree on the same rows.
       # In regression or binary classification, K has been set to one.
@@ -219,6 +220,7 @@ class GradientBoostingEnsemble:
         norm_1_gradient = np.abs(gradients_tree)
         rows_gbf = norm_1_gradient <= self.l2_threshold
         X_tree = X_tree[rows_gbf, :]
+        y_tree = y_tree[rows_gbf]
         gradients_tree = gradients_tree[rows_gbf]
 
         # Get back the original row index from the first filtering
@@ -243,9 +245,9 @@ class GradientBoostingEnsemble:
             num_idx=self.num_idx)
         # in multi-class classification, the target has to be binary
         # as each tree is a per-class regressor
-        y_target = ((y_ensemble == kth_tree).astype(np.float64)
+        y_target = ((y_tree == kth_tree).astype(np.float64)
                     if self.loss_.is_multi_class
-                    else y_ensemble)
+                    else y_tree)
         tree.Fit(X_tree, y_target, gradients_tree)
 
         # Add the tree to its corresponding ensemble
@@ -256,7 +258,7 @@ class GradientBoostingEnsemble:
       if score >= prev_score:
         # This tree doesn't improve overall prediction quality, removing from
         # model
-        update_gradients = False
+        update_gradients = self.loss_.is_multi_class  # not reusing gradients in multi-class as they are class-dependent
         self.trees.pop()
       else:
         print(tree_index, score)
@@ -1069,23 +1071,24 @@ def ComputePredictions(gradients: np.ndarray,
       (https://projecteuclid.org/euclid.aos/1013203451)
 
   Args:
-    gradients (np.ndarray): The gradients for the dataset instances.
-    y (np.ndarray): The dataset labels.
+    gradients (np.ndarray): The positive gradients y˜ for the dataset instances.
+    y (np.ndarray): The dataset labels y.
     loss (LossFunction): An sklearn loss wrapper
         suitable for regression and classification.
     l2_lambda (float): Regularization parameter for l2 loss function.
 
   Returns:
-    Prediction of a leaf
+    Prediction γ of a leaf
   """
   if len(gradients) == 0:
     prediction = 0.
   elif loss.is_multi_class:
     # sum of neg. gradients divided by sum of 2nd derivatives
     # aka one Newton-Raphson step
-    # for details ref. (eq 32) in Friedman 01.
+    # for details ref. (eq 33+34) in Friedman 01.
     prediction = -1 * np.sum(gradients) * (loss.K - 1) / loss.K  # type: float
-    prediction /= np.sum(np.abs(gradients) * (1 - np.abs(gradients))) + l2_lambda
+    denom = np.sum((y + gradients) * (1 - y - gradients))
+    prediction = 0 if abs(denom) < 1e-150 else prediction / (denom + l2_lambda)  # just to make sure
     # TODO: Verify on whether this l2-regularization is correct as is
   else:
     prediction = (-1 * np.sum(gradients) / (len(
