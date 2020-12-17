@@ -21,14 +21,19 @@ class DPGBDT(BaseEstimator):  # type: ignore
                nb_trees_per_ensemble: int,
                max_depth: int,
                learning_rate: float,
+               early_stop: int = 5,
                max_leaves: Optional[int] = None,
                min_samples_split: int = 2,
+               gradient_filtering: bool = False,
+               leaf_clipping: bool = False,
                balance_partition: bool = True,
                use_bfs: bool = False,
                use_3_trees: bool = False,
+               use_decay: bool = False,
                binary_classification: bool = False,
                cat_idx: Optional[List[int]] = None,
-               num_idx: Optional[List[int]] = None) -> None:
+               num_idx: Optional[List[int]] = None,
+               verbosity: int = -1) -> None:
     """Initialize the wrapper.
 
     Args:
@@ -37,11 +42,17 @@ class DPGBDT(BaseEstimator):  # type: ignore
       nb_trees_per_ensemble (int): The number of trees per ensemble.
       max_depth (int): The max depth for the trees.
       learning_rate (float): The learning rate.
+      early_stop (int): Optional. If the rmse doesn't decrease for <int>
+          consecutive rounds, abort training. Default is 5.
       max_leaves (int): Optional. The max number of leaf nodes for the trees.
           Tree will grow in a best-leaf first fashion until it contains
           max_leaves or until it reaches maximum depth, whichever comes first.
       min_samples_split (int): Optional. The minimum number of samples required
           to split an internal node. Default is 2.
+      gradient_filtering (bool): Optional. Whether or not to perform gradient
+          based data filtering during training. Default is False.
+      leaf_clipping (bool): Optional. Whether or not to clip the leaves
+          after training. Default is False.
       balance_partition (bool): Optional. Balance data repartition for training
           the trees. The default is True, meaning all trees within an ensemble
           will receive an equal amount of training samples. If set to False,
@@ -53,10 +64,15 @@ class DPGBDT(BaseEstimator):  # type: ignore
       use_3_trees (bool): Optional. If True, only build trees that have 3
           nodes, and then assemble nb_trees based on these sub-trees, at random.
           Default is False.
+      use_decay (bool): Optional. If True, internal node privacy budget has a
+          decaying factor.
       binary_classification (bool): Optional. If true, maps back the
           predictions to labels.
       cat_idx (List): Optional. List of indices for categorical features.
       num_idx (List): Optional. List of indices for numerical features.
+      verbosity (int): Optional. Verbosity level for debug messages. Default
+          is -1, meaning only warnings and above are displayed. 0 is info,
+          1 is debug.
     """
     self.model = None
     self.privacy_budget = privacy_budget
@@ -65,49 +81,44 @@ class DPGBDT(BaseEstimator):  # type: ignore
     self.max_depth = max_depth
     self.max_leaves = max_leaves
     self.min_samples_split = min_samples_split
+    self.gradient_filtering = gradient_filtering
+    self.leaf_clipping = leaf_clipping
     self.learning_rate = learning_rate
+    self.early_stop = early_stop
     self.balance_partition = balance_partition
     self.use_bfs = use_bfs
     self.use_3_trees = use_3_trees
+    self.use_decay = use_decay
     self.binary_classification = binary_classification
     self.cat_idx = cat_idx
     self.num_idx = num_idx
+    self.verbosity = verbosity
     self.model = GradientBoostingEnsemble(
         self.nb_trees,
         self.nb_trees_per_ensemble,
         max_depth=self.max_depth,
         privacy_budget=self.privacy_budget,
         learning_rate=self.learning_rate,
+        early_stop=self.early_stop,
         max_leaves=self.max_leaves,
         min_samples_split=self.min_samples_split,
+        gradient_filtering=self.gradient_filtering,
+        leaf_clipping=self.leaf_clipping,
         balance_partition=self.balance_partition,
         use_bfs=self.use_bfs,
         use_3_trees=self.use_3_trees,
+        use_decay=self.use_decay,
         cat_idx=self.cat_idx,
-        num_idx=self.num_idx)
+        num_idx=self.num_idx,
+        verbosity=self.verbosity)
 
   def fit(self, X: np.array, y: np.array) -> 'GradientBoostingEnsemble':
-    """Fit the model to the dataset.
-
-    Args:
-      X (np.array): The features.
-      y (np.array): The label.
-
-    Returns:
-      GradientBoostingEnsemble: A GradientBoostingEnsemble object.
-    """
+    """Stub for sklearn cross validation"""
     assert self.model
     return self.model.Train(X, y)
 
   def predict(self, X: np.array) -> np.array:
-    """Predict the label for a given dataset.
-
-    Args:
-      X (np.array): The dataset for which to predict values.
-
-    Returns:
-      np.array: The predictions.
-    """
+    """Stub for sklearn cross validation"""
     assert self.model
     reg_preds = self.model.Predict(X)
     if not self.binary_classification:
@@ -118,11 +129,10 @@ class DPGBDT(BaseEstimator):  # type: ignore
         class_preds.append(-1)
       else:
         class_preds.append(1)
-    return class_preds
+    return np.asarray(class_preds)
 
-  def get_params(
-      self,
-      deep: bool = True) -> Dict[str, Any]:  # pylint: disable=unused-argument
+  def get_params(self,
+                 deep: bool = True) -> Dict[str, Any]:  # pylint: disable=unused-argument
     """Stub for sklearn cross validation"""
     return {
         'privacy_budget': self.privacy_budget,
@@ -130,14 +140,19 @@ class DPGBDT(BaseEstimator):  # type: ignore
         'nb_trees_per_ensemble': self.nb_trees_per_ensemble,
         'max_depth': self.max_depth,
         'learning_rate': self.learning_rate,
+        'early_stop': self.early_stop,
         'max_leaves': self.max_leaves,
         'min_samples_split': self.min_samples_split,
+        'gradient_filtering': self.gradient_filtering,
+        'leaf_clipping': self.leaf_clipping,
         'balance_partition': self.balance_partition,
         'use_bfs': self.use_bfs,
         'use_3_trees': self.use_3_trees,
+        'use_decay': self.use_decay,
         'binary_classification': self.binary_classification,
         'cat_idx': self.cat_idx,
-        'num_idx': self.num_idx
+        'num_idx': self.num_idx,
+        'verbosity': self.verbosity
     }
 
   def set_params(self,
