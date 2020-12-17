@@ -1241,9 +1241,7 @@ def AddLaplacianNoise(leaves: List[DecisionNode],
     leaves (List[DecisionNode]): The list of leaves.
     scale (float): The scale to use for the laplacian distribution.
   """
-  # Comment the line below when using the model. This is for stability for
-  # cross-validation tests only.
-  np.random.seed(0)
+
   for leaf in leaves:
     noise = np.random.laplace(0, scale)
     logger.debug('Leaf value before noise: {0:f}'.format(
