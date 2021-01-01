@@ -2,12 +2,11 @@
 # gtheo@ethz.ch
 """Implement ensemble of differentially private gradient boosted trees."""
 
-import logging
 import math
 import operator
 from collections import defaultdict
 from queue import Queue
-from typing import List, Any, Optional, Dict, Tuple
+from typing import List, Any, Optional, Dict
 
 import numpy as np
 # pylint: disable=import-error
@@ -16,7 +15,10 @@ from sklearn.base import BaseEstimator
 from sklearn.model_selection import train_test_split
 # pylint: enable=import-error
 
-logger = logging.getLogger(__name__)
+import logger as logging
+
+logging.SetUpLogger(__name__)
+logger = logging.GetLogger(__name__)
 
 
 class GradientBoostingEnsemble:
@@ -336,179 +338,8 @@ class GradientBoostingEnsemble:
                       selected_rows)))
           X_ensemble = np.delete(X_ensemble, selected_rows, axis=0)
           y_ensemble = np.delete(y_ensemble, selected_rows)
-    if self.use_3_trees:
-      # Stores the first split of each tree
-      splitting_points = []  # type: List[Tuple[Any, Any]]
-      for idx, tree in enumerate(self.trees):
-        # Filtering trees that got split on the same index
-        assert tree.root_node is not None
-        splitting_points.append((tree.root_node.index, tree.root_node.value))
-      self.Combine_3_trees(self.trees, splitting_points)
+
     return self
-
-  def Combine_3_trees(self,
-                      trees: List['DifferentiallyPrivateTree'],
-                      splitting_points: List[Tuple[Any, Any]]) -> None:
-    """Combine 3-trees together to construct bigger decision trees.
-
-    Args:
-      trees (List[DifferentiallyPrivateTree]): A list of 3-trees.
-      splitting_points (List): A list of  3-trees's splitting points.
-    """
-
-    self.trees = []  # Re-init final predictions trees
-    for index, three_tree in enumerate(trees):
-      three_tree.root_node.depth = 0  # type: ignore
-      queue_children = Queue()  # type: Queue['DecisionNode']
-      queue_children.put(three_tree.root_node.left_child)  # type: ignore
-      queue_children.put(three_tree.root_node.right_child)  # type: ignore
-      depth = 1
-      if self.use_decay:
-        privacy_budget_for_node = np.around(
-            np.divide(three_tree.privacy_budget/2, np.power(2, depth)),
-            decimals=7)
-      else:
-        privacy_budget_for_node = np.around(
-            np.divide(three_tree.privacy_budget / 2, three_tree.max_depth),
-            decimals=7)
-      while not queue_children.empty():
-        left_child = queue_children.get()
-        right_child = queue_children.get()
-        child_to_split = []
-        for child in [left_child, right_child]:
-          assert child.depth is not None
-          if child.depth >= self.max_depth:
-            # Leaf node
-            child.prediction = three_tree.GetLeafPrediction(child.gradients)
-          else:
-            child_to_split.append(child)
-        for child in child_to_split:
-          # Apply exponential mechanism to find sub 3-node tree
-          probabilities = []
-          max_gain = -np.inf
-          for split_index, split_value in list(set(splitting_points)):
-            gain = three_tree.ComputeGain(split_index,
-                                          split_value,
-                                          child.X,
-                                          child.gradients)
-            if self.use_dp:
-              gain = (privacy_budget_for_node * gain) / (
-                  2. * three_tree.delta_g)
-            if gain > max_gain:
-              max_gain = gain
-            prob = {
-              'index': split_index,
-              'value': split_value,
-              'gain': gain
-            }
-            probabilities.append(prob)
-          if (np.asarray(
-              [prob['gain'] for prob in probabilities]) <= 0.0).all():
-            # No positive gain in 3-threes splitting points, looking for others
-            candidate = three_tree.FindBestSplit(child.X,
-                                                 child.gradients,
-                                                 child.depth)
-          else:
-            if self.use_dp:
-              candidate = ExponentialMechanism(probabilities, max_gain)
-            else:
-              candidate = max(probabilities, key=lambda x: x['gain'])
-
-          if not candidate:
-            child.prediction = three_tree.GetLeafPrediction(child.gradients)
-            continue
-          split_index = candidate['index']
-          split_value = candidate['value']
-          split_gain = candidate['gain']
-          left_, right_ = self.SplitNode(child,
-                                         split_index,
-                                         split_value,
-                                         split_gain)
-          three_tree.nodes.append(left_)
-          three_tree.nodes.append(right_)
-          queue_children.put(left_)
-          queue_children.put(right_)
-
-      if self.use_dp:
-        leaves = [node for node in three_tree.nodes if node.prediction]
-        if self.leaf_clipping:
-          # Clip the leaf nodes
-          logger.debug('Performing geometric leaf clipping')
-          ClipLeaves(
-              leaves, self.l2_threshold, self.learning_rate, index)
-
-        # Add noise to the predictions
-        privacy_budget_for_leaf_node = three_tree.privacy_budget / 2
-        laplace_scale = three_tree.delta_v / privacy_budget_for_leaf_node
-        logger.debug('Adding Laplace noise with scale: {0:f}'.format(
-            laplace_scale))
-        AddLaplacianNoise(leaves, laplace_scale)
-      self.trees.append(three_tree)
-    if not self.trees:
-      self.trees = trees
-
-    for tree in self.trees:
-      # Make the tree exportable if we want to print it
-      # Assign unique IDs to nodes
-      node_ids = Queue()  # type: Queue[int]
-      for node_id in range(0, len(tree.nodes)):
-        node_ids.put(node_id)
-      assert tree.root_node is not None
-      self.AssignNodeIDs(tree.root_node, node_ids)
-
-      tree.tree_ = TreeExporter(tree.nodes, self.l2_lambda)
-
-  def SplitNode(self,
-                node: 'DecisionNode',
-                index: int,
-                value: float,
-                gain: float) -> Tuple['DecisionNode', 'DecisionNode']:
-    """Split children of a 3-nodes tree based on the (index, value) pair.
-
-    Args:
-      node (DecisionNode): The node to split.
-      index (int): The feature's index on which to split the node.
-      value (float): The feature's value on which to split the node.
-      gain (float): Gain for the split.
-
-    Returns:
-      Tuple: Children created after the split.
-    """
-
-    assert node.X is not None
-    assert node.gradients is not None
-    assert node.depth is not None
-
-    # Split indices of instances from the node's dataset
-    lhs_op, rhs_op = self.feature_to_op[index]
-    lhs = np.where(lhs_op(node.X[:, index], value))[0]
-    rhs = np.where(rhs_op(node.X[:, index], value))[0]
-
-    # Compute the associated predictions
-    lhs_prediction = (-1 * np.sum(node.gradients[lhs]) / (len(
-        node.gradients[lhs]) + self.l2_lambda))  # type: float
-    rhs_prediction = (-1 * np.sum(node.gradients[rhs]) / (len(
-        node.gradients[rhs]) + self.l2_lambda))  # type: float
-
-    # Mark current node as split node and not leaf node
-    node.prediction = None
-    node.index = index
-    node.value = value
-    node.gain = gain
-
-    # Add children to node
-    node.left_child = DecisionNode(
-        X=node.X[lhs],
-        gradients=node.gradients[lhs],
-        prediction=lhs_prediction,
-        depth=node.depth+1)
-    node.right_child = DecisionNode(
-        X=node.X[rhs],
-        gradients=node.gradients[rhs],
-        prediction=rhs_prediction,
-        depth=node.depth+1)
-
-    return node.left_child, node.right_child
 
   def Predict(self, X: np.array) -> np.array:
     """Predict values from the ensemble of gradient boosted trees.
@@ -526,22 +357,6 @@ class GradientBoostingEnsemble:
     assert self.init_score is not None
     init_score = self.init_score[:len(predictions)]
     return np.add(init_score, predictions)
-
-  def AssignNodeIDs(self,
-                    node: 'DecisionNode',
-                    node_ids: Queue  # type: ignore
-                    ) -> None:
-    """Walk through the tree and assign a unique ID to the decision nodes.
-
-    Args:
-      node (DecisionNode): The node of the tree to assign an ID to.
-      node_ids (Queue): Queue that contains all available node ids.
-    """
-    node.node_id = node_ids.get()
-    if node.left_child:
-      self.AssignNodeIDs(node.left_child, node_ids)
-    if node.right_child:
-      self.AssignNodeIDs(node.right_child, node_ids)
 
   @staticmethod
   def ComputeGradientForLossFunction(y: np.array, y_pred: np.array) -> np.array:
@@ -789,8 +604,8 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       self.root_node = self.MakeTreeBFS(X, gradients)
     else:
       current_depth = 0
-      max_depth = 1 if self.use_3_trees else self.max_depth
-      self.root_node = self.MakeTreeDFS(X, gradients, current_depth, max_depth)
+      self.root_node = self.MakeTreeDFS(
+          X, gradients, current_depth, self.max_depth)
 
     leaves = [node for node in self.nodes if node.prediction]
 
@@ -809,23 +624,24 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       AddLaplacianNoise(leaves, laplace_scale)
 
     # Make the tree exportable if we want to print it
-    if not self.use_3_trees:
-      # Assign unique IDs to nodes
-      node_ids = Queue()  # type: Queue[int]
-      for node_id in range(0, len(self.nodes)):
-        node_ids.put(node_id)
-      if not self.use_bfs:
-        self.AssignNodeIDs(self.root_node, node_ids)
-      else:
-        root_node = max(self.nodes, key=lambda x: len(x.X))  # type: ignore
-        self.AssignNodeIDs(root_node, node_ids)
-      self.tree_ = TreeExporter(self.nodes, self.l2_lambda)
+    # Assign unique IDs to nodes
+    node_ids = Queue()  # type: Queue[int]
+    for node_id in range(0, len(self.nodes)):
+      node_ids.put(node_id)
+    if not self.use_bfs:
+      self.AssignNodeIDs(self.root_node, node_ids)
+    else:
+      root_node = max(self.nodes, key=lambda x: len(x.X))  # type: ignore
+      self.AssignNodeIDs(root_node, node_ids)
+    self.tree_ = TreeExporter(self.nodes, self.l2_lambda)
 
   def MakeTreeDFS(self,
                   X: np.array,
                   gradients: np.array,
                   current_depth: int,
-                  max_depth: int) -> DecisionNode:
+                  max_depth: int,
+                  X_sibling: Optional[np.array] = None,
+                  gradients_sibling: Optional[np.array] = None) -> DecisionNode:
     """Build a tree recursively, in DFS fashion.
 
     Args:
@@ -833,6 +649,10 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       gradients (np.array): The gradients for the dataset instances.
       current_depth (int): Current depth for the tree.
       max_depth (int): Max depth for the tree.
+      X_sibling (np.array): Optional. The subset of data in the sibling node.
+          For 3_trees only.
+      gradients_sibling (np.array): Optional. The gradients in the sibling
+          node. For 3_trees only.
 
     Returns:
       DecisionNode: A decision node.
@@ -851,7 +671,15 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       # node
       return MakeLeafNode()
 
-    best_split = self.FindBestSplit(X, gradients, max_depth)
+    if not self.use_3_trees:
+      best_split = self.FindBestSplit(X, gradients, current_depth)
+    else:
+      if current_depth != 0:
+        best_split = self.FindBestSplit(
+            X, gradients, current_depth, X_sibling=X_sibling,
+            gradients_sibling=gradients_sibling)
+      else:
+        best_split = self.FindBestSplit(X, gradients, current_depth)
     if best_split:
       logger.debug('Tree DFS: best split found at index {0:d}, value {1:f} '
                    'with gain {2:f}. Current depth is {3:d}'.format(
@@ -860,10 +688,18 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       lhs_op, rhs_op = self.feature_to_op[best_split['index']]
       lhs = np.where(lhs_op(X[:, best_split['index']], best_split['value']))[0]
       rhs = np.where(rhs_op(X[:, best_split['index']], best_split['value']))[0]
-      left_child = self.MakeTreeDFS(
-          X[lhs], gradients[lhs], current_depth + 1, max_depth)
-      right_child = self.MakeTreeDFS(
-          X[rhs], gradients[rhs], current_depth + 1, max_depth)
+      if not self.use_3_trees:
+        left_child = self.MakeTreeDFS(
+            X[lhs], gradients[lhs], current_depth + 1, max_depth)
+        right_child = self.MakeTreeDFS(
+            X[rhs], gradients[rhs], current_depth + 1, max_depth)
+      else:
+        left_child = self.MakeTreeDFS(
+            X[lhs], gradients[lhs], current_depth + 1, max_depth,
+            X_sibling=X[rhs], gradients_sibling=gradients[rhs])
+        right_child = self.MakeTreeDFS(
+            X[rhs], gradients[rhs], current_depth + 1, max_depth,
+            X_sibling=X[lhs], gradients_sibling=gradients[lhs])
       node = DecisionNode(X=X,
                           gradients=gradients,
                           index=best_split['index'],
@@ -890,8 +726,7 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       DecisionNode: A decision node.
     """
 
-    best_split = self.FindBestSplit(
-        X, gradients, depth=self.max_depth if self.use_decay else None)
+    best_split = self.FindBestSplit(X, gradients, current_depth=0)
     if not best_split:
       node = DecisionNode(X=X,
                           gradients=gradients,
@@ -964,9 +799,11 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
     lhs_X, rhs_X = current_node.X[lhs], current_node.X[rhs]
     lhs_grad, rhs_grad = current_node.gradients[lhs], current_node.gradients[
         rhs]
-    depth = self.max_depth - current_node.depth + 1 if self.use_decay else None
-    lhs_best_split = self.FindBestSplit(lhs_X, lhs_grad, depth=depth)
-    rhs_best_split = self.FindBestSplit(rhs_X, rhs_grad, depth=depth)
+
+    lhs_best_split = self.FindBestSplit(
+        lhs_X, lhs_grad, current_depth=current_node.depth + 1)
+    rhs_best_split = self.FindBestSplit(
+        rhs_X, rhs_grad, current_depth=current_node.depth + 1)
 
     # Can't split the node, so this becomes a leaf node.
     if not lhs_best_split or not rhs_best_split:
@@ -1039,14 +876,21 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
   def FindBestSplit(self,
                     X: np.array,
                     gradients: np.array,
-                    depth: Optional[int] = None) -> Optional[Dict[str, Any]]:
+                    current_depth: Optional[int] = None,
+                    X_sibling: Optional[np.array] = None,
+                    gradients_sibling: Optional[np.array] = None,
+                    ) -> Optional[Dict[str, Any]]:
     """Find best split of data using the exponential mechanism.
 
     Args:
       X (np.array): The dataset.
       gradients (np.array): The gradients for the dataset instances.
-      depth (int): Optional. The current depth of the tree. If specified,
-          the privacy budget decays with the depth growing.
+      current_depth (int): Optional. The current depth of the tree. If
+          specified, the privacy budget decays with the depth growing.
+      X_sibling (np.array): Optional. The subset of data in the sibling node.
+          For 3_trees only.
+      gradients_sibling (np.array): Optional. The gradients in the sibling
+          node. For 3_trees only.
 
     Returns:
       Optional[Dict[str, Any]]: A dictionary containing the split
@@ -1054,8 +898,7 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
     """
 
     if self.use_dp:
-      if depth and self.use_decay:
-        current_depth = self.max_depth - depth + 1
+      if current_depth and self.use_decay:
         privacy_budget_for_node = np.around(
             np.divide(self.privacy_budget/2, np.power(
                 2, current_depth)), decimals=7)
@@ -1064,6 +907,11 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
             np.divide(self.privacy_budget/2, self.max_depth), decimals=7)
       logger.debug('Using {0:f} budget for internal leaf nodes.'.format(
           privacy_budget_for_node))
+
+    if self.use_3_trees and current_depth != 0:
+      # If not for the root node splitting, budget is divided by the 3-nodes
+      privacy_budget_for_node /= 2
+
     probabilities = []
     max_gain = -np.inf
     # Iterate over features
@@ -1081,7 +929,9 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
             'gain': 0.
           }
         else:
-          gain = self.ComputeGain(feature_index, value, X, gradients)
+          gain = self.ComputeGain(
+              feature_index, value, X, gradients, X_sibling=X_sibling,
+              gradients_sibling=gradients_sibling)
           if gain == -1:
             # Feature's value cannot be chosen, skipping
             continue
@@ -1153,7 +1003,9 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
                   index: int,
                   value: Any,
                   X: np.array,
-                  gradients: np.array) -> float:
+                  gradients: np.array,
+                  X_sibling: Optional[np.array] = None,
+                  gradients_sibling: Optional[np.array] = None) -> float:
     """Compute the gain for a given split.
 
     See https://dl.acm.org/doi/pdf/10.1145/2939672.2939785
@@ -1163,6 +1015,10 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       value (Any): The feature's value to split on.
       X (np.array): The dataset.
       gradients (np.array): The gradients for the dataset instances.
+      X_sibling (np.array): Optional. The subset of data in the sibling node.
+          For 3_trees only.
+      gradients_sibling (np.array): Optional. The gradients in the sibling
+          node. For 3_trees only.
 
     Returns:
       float: The gain for the split.
@@ -1173,6 +1029,14 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
     if len(lhs) == 0 or len(rhs) == 0:
       # Can't split on this feature as all instances share the same value
       return -1
+
+    if self.use_3_trees and X_sibling is not None:
+      X = np.concatenate((X, X_sibling), axis=0)
+      gradients = np.concatenate(
+          (gradients, gradients_sibling), axis=0)
+      lhs = np.where(lhs_op(X[:, index], value))[0]
+      rhs = np.where(rhs_op(X[:, index], value))[0]
+
     lhs_grad, rhs_grad = gradients[lhs], gradients[rhs]
     lhs_gain = np.square(np.sum(lhs_grad)) / (
         len(lhs) + self.l2_lambda)  # type: float
