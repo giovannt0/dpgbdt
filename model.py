@@ -358,6 +358,8 @@ class GradientBoostingEnsemble:
               num_idx=self.num_idx)
           tree.Fit(X, (y == kth_tree).astype(
               np.float64) if self.loss_.is_multi_class else y, gradients)
+          # Add the tree to its corresponding ensemble
+          k_trees.append(tree)
       self.trees.append(k_trees)
 
       score = self.loss_(y_test, self.Predict(X_test))  # i.e. mse or deviance
