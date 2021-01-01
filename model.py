@@ -16,7 +16,7 @@ import numpy as np
 from scipy.special import logsumexp
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble._gb_losses import LeastSquaresError, MultinomialDeviance, LossFunction
+from sklearn.ensemble._gb_losses import LeastSquaresError, MultinomialDeviance, LossFunction, BinomialDeviance
 # pylint: enable=import-error,line-too-long
 
 import logger as logging
@@ -129,9 +129,16 @@ class GradientBoostingEnsemble:
     self.num_idx = num_idx
     self.verbosity = verbosity
     self.trees = []  # type: List[List[DifferentiallyPrivateTree]]
+
     # classification vs regression
-    self.loss_ = MultinomialDeviance(
-        n_classes) if n_classes else LeastSquaresError(1)  # type: LossFunction
+    if not n_classes:
+      self.loss_ = LeastSquaresError(1)  # type: LossFunction
+    else:
+      if n_classes == 2:  # binary classification
+        self.loss_ = BinomialDeviance(n_classes)  # type: LossFunction
+      else:
+        self.loss_ = MultinomialDeviance(n_classes)  # type: LossFunction
+
     self.init_ = self.loss_.init_estimator()
 
     # Loss parameters
@@ -365,6 +372,7 @@ class GradientBoostingEnsemble:
       score = self.loss_(y_test, self.Predict(X_test))  # i.e. mse or deviance
       logger.info('Decision tree {0:d} fit. Current score: {1:f} - Best '
                   'score so far: {2:f}'.format(tree_index, score, prev_score))
+
       if score >= prev_score:
         # This tree doesn't improve overall prediction quality, removing from
         # model
@@ -425,7 +433,7 @@ class GradientBoostingEnsemble:
     Raises:
       ValueError: If the loss function doesn't match the prediction task.
     """
-    if not isinstance(self.loss_, MultinomialDeviance):
+    if not isinstance(self.loss_, (MultinomialDeviance, BinomialDeviance)):
       raise ValueError("Labels are not defined for regression tasks.")
 
     raw_predictions = self.Predict(X)
@@ -433,6 +441,27 @@ class GradientBoostingEnsemble:
     encoded_labels = self.loss_._raw_prediction_to_decision(raw_predictions)
     # pylint: enable=no-member,protected-access
     return encoded_labels
+
+  def PredictProba(self, X: np.ndarray) -> np.ndarray:
+    """Predict class probabilities for X.
+
+    Args:
+      X (np.ndarray): The dataset for which to predict labels.
+
+    Returns:
+      np.ndarray: The class probabilities of the input samples.
+
+    Raises:
+      ValueError: If the loss function doesn't match the prediction task.
+    """
+    if not isinstance(self.loss_, (MultinomialDeviance, BinomialDeviance)):
+      raise ValueError("Labels are not defined for regression tasks.")
+
+    raw_predictions = self.Predict(X)
+    # pylint: disable=no-member,protected-access
+    probas = self.loss_._raw_prediction_to_proba(raw_predictions)
+    # pylint: enable=no-member,protected-access
+    return probas
 
   def ComputeGradientForLossFunction(self,
                                      y: np.array,
@@ -645,7 +674,9 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       cat_idx (List): Optional. List of indices for categorical features.
       num_idx (List): Optional. List of indices for numerical features.
     """
-    assert type(loss) in [LeastSquaresError, MultinomialDeviance]
+    assert type(loss) in [LeastSquaresError,
+                          MultinomialDeviance,
+                          BinomialDeviance]
 
     self.root_node = None  # type: Optional[DecisionNode]
     self.nodes_bfs = Queue()  # type: Queue[DecisionNode]

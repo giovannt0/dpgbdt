@@ -31,7 +31,6 @@ class DPGBDT(BaseEstimator):  # type: ignore
                use_bfs: bool = False,
                use_3_trees: bool = False,
                use_decay: bool = False,
-               binary_classification: bool = False,
                cat_idx: Optional[List[int]] = None,
                num_idx: Optional[List[int]] = None,
                verbosity: int = -1) -> None:
@@ -69,8 +68,6 @@ class DPGBDT(BaseEstimator):  # type: ignore
           Default is False.
       use_decay (bool): Optional. If True, internal node privacy budget has a
           decaying factor.
-      binary_classification (bool): Optional. If true, maps back the
-          predictions to labels.
       cat_idx (List): Optional. List of indices for categorical features.
       num_idx (List): Optional. List of indices for numerical features.
       verbosity (int): Optional. Verbosity level for debug messages. Default
@@ -88,19 +85,18 @@ class DPGBDT(BaseEstimator):  # type: ignore
     self.leaf_clipping = leaf_clipping
     self.learning_rate = learning_rate
     self.early_stop = early_stop
-    self.n_classes = n_classes
+    self.n_classes_ = n_classes
     self.balance_partition = balance_partition
     self.use_bfs = use_bfs
     self.use_3_trees = use_3_trees
     self.use_decay = use_decay
-    self.binary_classification = binary_classification
     self.cat_idx = cat_idx
     self.num_idx = num_idx
     self.verbosity = verbosity
     self.model = GradientBoostingEnsemble(
         self.nb_trees,
         self.nb_trees_per_ensemble,
-        n_classes=self.n_classes,
+        n_classes=self.n_classes_,
         max_depth=self.max_depth,
         privacy_budget=self.privacy_budget,
         learning_rate=self.learning_rate,
@@ -116,6 +112,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
         cat_idx=self.cat_idx,
         num_idx=self.num_idx,
         verbosity=self.verbosity)
+    self.n_features_ = None
 
   def fit(self, X: np.array, y: np.array) -> 'GradientBoostingEnsemble':
     """Fit the model to the dataset.
@@ -128,6 +125,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
       GradientBoostingEnsemble: A GradientBoostingEnsemble object.
     """
     assert self.model
+    self.n_features_ = X.shape[1]
     return self.model.Train(X, y)
 
   def predict(self, X: np.array) -> np.array:
@@ -140,17 +138,24 @@ class DPGBDT(BaseEstimator):  # type: ignore
       np.array: The predictions.
     """
     assert self.model
-    # try (multi-class) classification output first,
+    # try classification output first,
     # o.w. fallback to the raw regression values
     try:
       return self.model.PredictLabels(X)
     except ValueError:
-      reg_preds = self.model.Predict(X).squeeze()  # shape: (n_samples,)
-      # binary classification is here conducted by regression
-      # and not by the deviance loss (could be improved later)
-      if not self.binary_classification:
-        return reg_preds
-      return np.where(reg_preds < 0, -1, 1)
+      return self.model.Predict(X).squeeze()
+
+  def predict_proba(self, X: np.array) -> np.array:
+    """Predict class probabilities for X.
+
+    Args:
+      X (np.array): The dataset for which to predict values.
+
+    Returns:
+      np.array: The class probabilities of the input samples.
+    """
+    assert self.model
+    return self.model.PredictProba(X)
 
   def get_params(
       self,
@@ -163,7 +168,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
         'max_depth': self.max_depth,
         'learning_rate': self.learning_rate,
         'early_stop': self.early_stop,
-        'n_classes': self.n_classes,
+        'n_classes': self.n_classes_,
         'max_leaves': self.max_leaves,
         'min_samples_split': self.min_samples_split,
         'gradient_filtering': self.gradient_filtering,
@@ -172,7 +177,6 @@ class DPGBDT(BaseEstimator):  # type: ignore
         'use_bfs': self.use_bfs,
         'use_3_trees': self.use_3_trees,
         'use_decay': self.use_decay,
-        'binary_classification': self.binary_classification,
         'cat_idx': self.cat_idx,
         'num_idx': self.num_idx,
         'verbosity': self.verbosity
