@@ -12,12 +12,12 @@ from queue import Queue
 from typing import List, Any, Optional, Dict
 
 import numpy as np
-# pylint: disable=import-error
+# pylint: disable=import-error,line-too-long
 from scipy.special import logsumexp
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble._gb_losses import LeastSquaresError, MultinomialDeviance, LossFunction
-# pylint: enable=import-error
+# pylint: enable=import-error,line-too-long
 
 import logger as logging
 
@@ -196,11 +196,13 @@ class GradientBoostingEnsemble:
     tree_privacy_budget = np.divide(self.privacy_budget, nb_ensembles)
     # In multi-class classification the budget for each tree
     # is the same as for the whole K trees but halved
-    # As each datapoint is only assigned to one class,
-    # it only matters if it is assigned to the considered class or not but not to which other
+    # As each data point is only assigned to one class,
+    # it only matters if it is assigned to the considered class or not but not
+    # to which other
     # Thus it always remains 2 - independently of how many total classes exists
     privacy_budget_per_tree = 2 if self.loss_.is_multi_class else 1
-    tree_privacy_budget = np.divide(tree_privacy_budget, privacy_budget_per_tree)
+    tree_privacy_budget = np.divide(
+        tree_privacy_budget, privacy_budget_per_tree)
 
     prev_score = np.inf
 
@@ -265,14 +267,16 @@ class GradientBoostingEnsemble:
         k_trees = []  # type: List[DifferentiallyPrivateTree]
         for kth_tree in range(self.loss_.K):
           if tree_index == 0:
-              # First tree, start with initial scores (mean of labels)
-              gradients = self.ComputeGradientForLossFunction(
-                  y, self.init_score[:len(y)], kth_tree)
+            # First tree, start with initial scores (mean of labels)
+            assert self.init_score is not None
+            gradients = self.ComputeGradientForLossFunction(
+                y, self.init_score[:len(y)], kth_tree)
           else:
-              # Update gradients of all training instances on loss l
-              if update_gradients:
-                  gradients = self.ComputeGradientForLossFunction(
-                      y_ensemble, self.Predict(X_ensemble), kth_tree)  # type: ignore
+            # Update gradients of all training instances on loss l
+            if update_gradients:
+              gradients = self.ComputeGradientForLossFunction(
+                  y_ensemble, self.Predict(
+                      X_ensemble), kth_tree)  # type: ignore
 
           assert gradients is not None
           gradients_tree = gradients[rows]
@@ -327,6 +331,7 @@ class GradientBoostingEnsemble:
         for kth_tree in range(self.loss_.K):
           if tree_index == 0:
             # First tree, start with initial scores (mean of labels)
+            assert self.init_score is not None
             gradients = self.ComputeGradientForLossFunction(
               y, self.init_score[:len(y)], kth_tree)
           else:
@@ -342,6 +347,7 @@ class GradientBoostingEnsemble:
               privacy_budget=0.,
               delta_g=0.,
               delta_v=0.,
+              loss=self.loss_,
               max_depth=self.max_depth,
               max_leaves=self.max_leaves,
               min_samples_split=self.min_samples_split,
@@ -360,7 +366,8 @@ class GradientBoostingEnsemble:
       if score >= prev_score:
         # This tree doesn't improve overall prediction quality, removing from
         # model
-        update_gradients = self.loss_.is_multi_class  # not reusing gradients in multi-class as they are class-dependent
+        # not reusing gradients in multi-class as they are class-dependent
+        update_gradients = self.loss_.is_multi_class
         self.trees.pop()
         if not self.use_dp:
           self.early_stop -= 1
@@ -412,15 +419,23 @@ class GradientBoostingEnsemble:
 
     Returns:
       np.ndarray: The label predictions.
+
+    Raises:
+      ValueError: If the loss function doesn't match the prediction task.
     """
-    if type(self.loss_) is not MultinomialDeviance:
+    if not isinstance(self.loss_, MultinomialDeviance):
       raise ValueError("Labels are not defined for regression tasks.")
 
     raw_predictions = self.Predict(X)
+    # pylint: disable=no-member,protected-access
     encoded_labels = self.loss_._raw_prediction_to_decision(raw_predictions)
+    # pylint: enable=no-member,protected-access
     return encoded_labels
 
-  def ComputeGradientForLossFunction(self, y: np.array, y_pred: np.array, k: int) -> np.array:
+  def ComputeGradientForLossFunction(self,
+                                     y: np.array,
+                                     y_pred: np.array,
+                                     k: int) -> np.array:
     """Compute the gradient of the loss function.
 
     Args:
@@ -453,6 +468,7 @@ class DecisionNode:
     prediction (float): For a leaf node, holds the predicted value.
     processed (bool): If a node has been processed during BFS tree construction.
   """
+  # pylint: disable=too-many-arguments
 
   def __init__(self,
                X: Optional[np.array] = None,
@@ -471,7 +487,8 @@ class DecisionNode:
       X (np.array): Optional. The dataset associated to the node. Only for
           BFS tree and 3-tree construction.
       y (np.ndarray): Optional. The dataset labels associated to the node and
-          used for the leaf predictions. Only for BFS tree and 3-tree construction.
+          used for the leaf predictions. Only for BFS tree and 3-tree
+          construction.
       gradients (np.array): The gradients for the dataset instances.
       index (int): Optional. An index for the feature on which the node splits.
           Default is None.
@@ -1229,18 +1246,18 @@ def ComputePredictions(gradients: np.ndarray,
     Prediction γ of a leaf
   """
   if len(gradients) == 0:
-    prediction = 0.
+    prediction = 0.  # type: ignore
   elif loss.is_multi_class:
     # sum of neg. gradients divided by sum of 2nd derivatives
     # aka one Newton-Raphson step
     # for details ref. (eq 33+34) in Friedman 01.
-    prediction = -1 * np.sum(gradients) * (loss.K - 1) / loss.K  # type: float
+    prediction = -1 * np.sum(gradients) * (loss.K - 1) / loss.K
     denom = np.sum((y + gradients) * (1 - y - gradients))
-    prediction = 0 if abs(denom) < 1e-150 else prediction / (denom + l2_lambda)  # just to make sure
-    # TODO: Verify on whether this l2-regularization is correct as is
+    prediction = 0 if abs(denom) < 1e-150 else prediction / (
+        denom + l2_lambda)
   else:
     prediction = (-1 * np.sum(gradients) / (len(
-      gradients) + l2_lambda))  # type: float
+        gradients) + l2_lambda))
   return prediction
 
 

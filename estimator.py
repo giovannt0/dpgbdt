@@ -150,8 +150,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
       # and not by the deviance loss (could be improved later)
       if not self.binary_classification:
         return reg_preds
-      else:
-        return np.where(reg_preds < 0, -1, 1)
+      return np.where(reg_preds < 0, -1, 1)
 
   def get_params(
       self,
