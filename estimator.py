@@ -22,6 +22,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
                max_depth: int,
                learning_rate: float,
                early_stop: int = 5,
+               n_classes: Optional[int] = None,
                max_leaves: Optional[int] = None,
                min_samples_split: int = 2,
                gradient_filtering: bool = False,
@@ -44,6 +45,8 @@ class DPGBDT(BaseEstimator):  # type: ignore
       learning_rate (float): The learning rate.
       early_stop (int): Optional. If the rmse doesn't decrease for <int>
           consecutive rounds, abort training. Default is 5.
+      n_classes (int): Number of classes. Triggers regression (None) vs
+          classification.
       max_leaves (int): Optional. The max number of leaf nodes for the trees.
           Tree will grow in a best-leaf first fashion until it contains
           max_leaves or until it reaches maximum depth, whichever comes first.
@@ -85,6 +88,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
     self.leaf_clipping = leaf_clipping
     self.learning_rate = learning_rate
     self.early_stop = early_stop
+    self.n_classes = n_classes
     self.balance_partition = balance_partition
     self.use_bfs = use_bfs
     self.use_3_trees = use_3_trees
@@ -96,6 +100,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
     self.model = GradientBoostingEnsemble(
         self.nb_trees,
         self.nb_trees_per_ensemble,
+        n_classes=self.n_classes,
         max_depth=self.max_depth,
         privacy_budget=self.privacy_budget,
         learning_rate=self.learning_rate,
@@ -113,26 +118,44 @@ class DPGBDT(BaseEstimator):  # type: ignore
         verbosity=self.verbosity)
 
   def fit(self, X: np.array, y: np.array) -> 'GradientBoostingEnsemble':
-    """Stub for sklearn cross validation"""
+    """Fit the model to the dataset.
+
+    Args:
+      X (np.array): The features.
+      y (np.array): The label.
+
+    Returns:
+      GradientBoostingEnsemble: A GradientBoostingEnsemble object.
+    """
     assert self.model
     return self.model.Train(X, y)
 
   def predict(self, X: np.array) -> np.array:
-    """Stub for sklearn cross validation"""
-    assert self.model
-    reg_preds = self.model.Predict(X)
-    if not self.binary_classification:
-      return reg_preds
-    class_preds = []
-    for reg in reg_preds:
-      if reg < 0:
-        class_preds.append(-1)
-      else:
-        class_preds.append(1)
-    return np.asarray(class_preds)
+    """Predict the label for a given dataset.
 
-  def get_params(self,
-                 deep: bool = True) -> Dict[str, Any]:  # pylint: disable=unused-argument
+    Args:
+      X (np.array): The dataset for which to predict values.
+
+    Returns:
+      np.array: The predictions.
+    """
+    assert self.model
+    # try (multi-class) classification output first,
+    # o.w. fallback to the raw regression values
+    try:
+      return self.model.PredictLabels(X)
+    except ValueError:
+      reg_preds = self.model.Predict(X).squeeze()  # shape: (n_samples,)
+      # binary classification is here conducted by regression
+      # and not by the deviance loss (could be improved later)
+      if not self.binary_classification:
+        return reg_preds
+      else:
+        return np.where(reg_preds < 0, -1, 1)
+
+  def get_params(
+      self,
+      deep: bool = True) -> Dict[str, Any]:  # pylint: disable=unused-argument
     """Stub for sklearn cross validation"""
     return {
         'privacy_budget': self.privacy_budget,
@@ -141,6 +164,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
         'max_depth': self.max_depth,
         'learning_rate': self.learning_rate,
         'early_stop': self.early_stop,
+        'n_classes': self.n_classes,
         'max_leaves': self.max_leaves,
         'min_samples_split': self.min_samples_split,
         'gradient_filtering': self.gradient_filtering,
