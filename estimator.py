@@ -2,12 +2,13 @@
 # gtheo@ethz.ch
 """Estimator wrapper around the implementation."""
 
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 # pylint: disable=import-error
 from sklearn.base import BaseEstimator
 # pylint: enable=import-error
 
-import numpy as np
 from model import GradientBoostingEnsemble
 
 
@@ -52,7 +53,8 @@ class DPGBDT(BaseEstimator):  # type: ignore
       min_samples_split (int): Optional. The minimum number of samples required
           to split an internal node. Default is 2.
       gradient_filtering (bool): Optional. Whether or not to perform gradient
-          based data filtering during training. Default is False.
+          based data filtering during training (only available on regression).
+          Default is False.
       leaf_clipping (bool): Optional. Whether or not to clip the leaves
           after training. Default is False.
       balance_partition (bool): Optional. Balance data repartition for training
