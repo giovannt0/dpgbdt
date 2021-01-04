@@ -9,16 +9,16 @@ import math
 import operator
 from collections import defaultdict
 from queue import Queue
-from typing import List, Any, Optional, Dict
+from typing import Any, Dict, List, Optional
 
 import numpy as np
-# pylint: disable=import-error,line-too-long
+# pylint: disable=import-error
 from scipy.special import logsumexp
 from sklearn.base import BaseEstimator
+from sklearn.ensemble._gb_losses import (BinomialDeviance, LeastSquaresError,
+                                         LossFunction, MultinomialDeviance)
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble._gb_losses import LeastSquaresError, MultinomialDeviance, LossFunction, BinomialDeviance
-# pylint: enable=import-error,line-too-long
-
+# pylint: enable=import-error
 import logger as logging
 
 logging.SetUpLogger(__name__)
@@ -80,7 +80,8 @@ class GradientBoostingEnsemble:
       min_samples_split (int): Optional. The minimum number of samples required
           to split an internal node. Default is 2.
       gradient_filtering (bool): Optional. Whether or not to perform gradient
-          based data filtering during training. Default is False.
+          based data filtering during training (only available on regression).
+          Default is False.
       leaf_clipping (bool): Optional. Whether or not to clip the leaves
           after training. Default is False.
       balance_partition (bool): Optional. Balance data repartition for training
@@ -212,6 +213,7 @@ class GradientBoostingEnsemble:
         tree_privacy_budget, privacy_budget_per_tree)
 
     prev_score = np.inf
+    early_stop_round = self.early_stop
 
     # Train all trees
     for tree_index in range(self.nb_trees):
@@ -266,8 +268,6 @@ class GradientBoostingEnsemble:
 
         # Select <number_of_rows> rows at random from the ensemble dataset
         rows = np.random.randint(len(X_ensemble), size=number_of_rows)
-        X_tree = X_ensemble[rows, :]
-        y_tree = y_ensemble[rows]
 
         # train for each class a separate tree on the same rows.
         # In regression or binary classification, K has been set to one.
@@ -287,9 +287,14 @@ class GradientBoostingEnsemble:
 
           assert gradients is not None
           gradients_tree = gradients[rows]
+          X_tree = X_ensemble[rows, :]
+          y_tree = y_ensemble[rows]
 
           # Gradient based data filtering
-          if self.gradient_filtering:
+          # On multi-class deactivated as gradients are reused thus
+          # a row has to be used on neither of all K trees to be of effect
+          # which is very unlikely in practice.
+          if self.gradient_filtering and not self.loss_.is_multi_class:
             if tree_index > 0:
               norm_1_gradient = np.abs(gradients_tree)
               rows_gbf = norm_1_gradient <= self.l2_threshold
@@ -380,8 +385,8 @@ class GradientBoostingEnsemble:
         update_gradients = self.loss_.is_multi_class
         self.trees.pop()
         if not self.use_dp:
-          self.early_stop -= 1
-          if self.early_stop == 0:
+          early_stop_round -= 1
+          if early_stop_round == 0:
             logger.info('Early stop kicked in. No improvement, stopping.')
             break
       else:
@@ -398,6 +403,8 @@ class GradientBoostingEnsemble:
                       selected_rows)))
           X_ensemble = np.delete(X_ensemble, selected_rows, axis=0)
           y_ensemble = np.delete(y_ensemble, selected_rows)
+        else:
+          early_stop_round = self.early_stop
 
     return self
 
