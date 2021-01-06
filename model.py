@@ -83,7 +83,7 @@ class GradientBoostingEnsemble:
           based data filtering during training (only available on regression).
           Default is False.
       leaf_clipping (bool): Optional. Whether or not to clip the leaves
-          after training. Default is False.
+          after training (only available on regression). Default is False.
       balance_partition (bool): Optional. Balance data repartition for training
           the trees. The default is True, meaning all trees within an ensemble
           will receive an equal amount of training samples. If set to False,
@@ -748,7 +748,7 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
     leaves = [node for node in self.nodes if node.prediction]
 
     if self.use_dp:
-      if self.leaf_clipping:
+      if self.leaf_clipping or self.loss.is_multi_class:
         # Clip the leaf nodes
         logger.debug('Performing geometric leaf clipping')
         ClipLeaves(
