@@ -15,11 +15,11 @@ import numpy as np
 # pylint: disable=import-error
 from scipy.special import logsumexp
 from sklearn.base import BaseEstimator
-from sklearn.ensemble._gb_losses import (BinomialDeviance, LeastSquaresError,
-                                         LossFunction, MultinomialDeviance)
 from sklearn.model_selection import train_test_split
+
 # pylint: enable=import-error
 import logger as logging
+import losses
 
 logging.SetUpLogger(__name__)
 logger = logging.GetLogger(__name__)
@@ -38,13 +38,14 @@ class GradientBoostingEnsemble:
         function (default), this is 1.
     l2_lambda (float): Regularization parameter for l2 loss function.
         For the square loss function (default), this is 0.1.
-    trees (List[List[DifferentiallyPrivateTree]]): A list of k-classes DP trees.
+    trees (List[List[DifferentiallyPrivateTree]]): A list of DP boosted k-class trees.
   """
   # pylint: disable=invalid-name, too-many-arguments, unused-variable
 
   def __init__(self,
                nb_trees: int,
                nb_trees_per_ensemble: int,
+               clipping_bound: float,
                n_classes: Optional[int] = None,
                max_depth: int = 6,
                privacy_budget: float = 1.0,
@@ -71,6 +72,9 @@ class GradientBoostingEnsemble:
       max_depth (int): Optional. The depth for the trees. Default is 6.
       privacy_budget (float): Optional. The privacy budget available for the
           model. Default is 1.0.
+      clipping_bound (float): Optional. The clipping bound used to limit the
+          influence of data points on the loss function, in context of the
+          AboveThreshold mechanism.
       learning_rate (float): Optional. The learning rate. Default is 0.1.
       early_stop (int): Optional. If the rmse doesn't decrease for <int>
           consecutive rounds, abort training. Default is 5.
@@ -105,17 +109,10 @@ class GradientBoostingEnsemble:
       """
     self.nb_trees = nb_trees
     self.nb_trees_per_ensemble = nb_trees_per_ensemble
+    self.n_classes = n_classes
     self.max_depth = max_depth
-    # Too high a privacy budget generates a bunch of overflows in the
-    # exponential mechanism. Better performances with lower orders of
-    # magnitudes. Note that if the aim is to disable DP, then the budget
-    # should be set to 0.
-    self.privacy_budget = privacy_budget if privacy_budget <= 1000 else 1000
-    if self.privacy_budget > 100:
-      logger.warning('High privacy budget detected. If the aim is to '
-                     'deactivate differential privacy, then please set '
-                     'privacy_budget to 0. The budget has an upper of 1000 in '
-                     'all other cases.')
+    self.privacy_budget = privacy_budget
+    self.clipping_bound = clipping_bound
     self.learning_rate = learning_rate
     self.early_stop = early_stop
     self.max_leaves = max_leaves
@@ -129,16 +126,41 @@ class GradientBoostingEnsemble:
     self.cat_idx = cat_idx
     self.num_idx = num_idx
     self.verbosity = verbosity
+
+    # Too high a privacy budget generates a bunch of overflows in the
+    # exponential mechanism. Better performances with lower orders of
+    # magnitudes. Note that if the aim is to disable DP, then the budget
+    # should be set to 0.
+    if self.privacy_budget > 100:
+      logger.warning('High privacy budget detected. If the aim is to '
+                     'deactivate differential privacy, then please set '
+                     'privacy_budget to 0. The budget has an upper of 1000 in '
+                     'all other cases.')
+    self.privacy_budget = min(self.privacy_budget, 1000)
+
+    self.use_dp = self.privacy_budget > 0  # Whether to use differential privacy
+    if not self.use_dp:
+      logger.warning('! ! ! Differential privacy disabled ! ! !')
+
+    if self.use_3_trees and self.use_bfs:
+      # Since we're building 3-node trees it's the same anyways.
+      self.use_bfs = False
+
+    # The inner list represents k-trees (singletons for k = 1), the outer list
+    # is the spine of the boosted trees.
     self.trees = []  # type: List[List[DifferentiallyPrivateTree]]
 
     # classification vs regression
-    if not n_classes:
-      self.loss_ = LeastSquaresError(1)  # type: LossFunction
-    else:
-      if n_classes == 2:  # binary classification
-        self.loss_ = BinomialDeviance(n_classes)  # type: LossFunction
-      else:
-        self.loss_ = MultinomialDeviance(n_classes)  # type: LossFunction
+    if self.n_classes is None:
+      self.loss_ = losses.ClippedLeastSquaresError(self.clipping_bound)
+    elif self.n_classes == 2: # binary classification
+      self.loss_ = losses.ClippedBinomialDeviance(
+        self.n_classes, self.clipping_bound
+      )
+    else: # multiary classification
+      self.loss_ = losses.ClippedMultinomialDeviance(
+        self.n_classes, self.clipping_bound
+      )
 
     self.init_ = self.loss_.init_estimator()
 
@@ -148,14 +170,6 @@ class GradientBoostingEnsemble:
 
     # Initial score
     self.init_score = None
-
-    self.use_dp = privacy_budget > 0.  # Use differential privacy or not
-    if not self.use_dp:
-      logger.warning('! ! ! Differential privacy disabled ! ! !')
-
-    if self.use_3_trees and self.use_bfs:
-      # Since we're building 3-node trees it's the same anyways.
-      self.use_bfs = False
 
     if self.verbosity <= -1:
       logger.setLevel(logging.WARNING)
@@ -170,6 +184,7 @@ class GradientBoostingEnsemble:
     if self.cat_idx:
       for feature_index in self.cat_idx:
         self.feature_to_op[feature_index] = (operator.eq, operator.ne)
+
 
   def Train(self,
             X: np.array,
@@ -191,6 +206,7 @@ class GradientBoostingEnsemble:
     logger.debug('Training initialized with score: {}'.format(self.init_score))
     update_gradients = True
 
+    # TODO Why is `X_train` used only once (trivially) and `y_train` not at all?
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.3, random_state=0)
     logger.debug('Using {0:d} instances for training and {1:d} instances for '
@@ -374,24 +390,20 @@ class GradientBoostingEnsemble:
           k_trees.append(tree)
       self.trees.append(k_trees)
 
-      score = self.loss_(y_test, self.Predict(X_test))  # i.e. mse or deviance
+      clipped_score = self.loss_(
+        y = y_test,
+        raw_predictions = self.Predict(X_test)
+      )
       logger.info('Decision tree {0:d} fit. Current score: {1:f} - Best '
-                  'score so far: {2:f}'.format(tree_index, score, prev_score))
+                  'score so far: {2:f}'.format(tree_index, clipped_score, prev_score))
 
-      if score >= prev_score:
-        # This tree doesn't improve overall prediction quality, removing from
-        # model
-        # not reusing gradients in multi-class as they are class-dependent
-        update_gradients = self.loss_.is_multi_class
-        self.trees.pop()
-        if not self.use_dp:
-          early_stop_round -= 1
-          if early_stop_round == 0:
-            logger.info('Early stop kicked in. No improvement, stopping.')
-            break
-      else:
+      lap_noise = np.random.laplace(
+        scale = self.clipping_bound / (len(y_test) * self.privacy_budget)
+      )
+      above_threshold = clipped_score + lap_noise < prev_score
+      if above_threshold:
         update_gradients = True
-        prev_score = score
+        prev_score = clipped_score
         # Remove the selected rows from the ensemble's dataset
         # The instances that were filtered out by GBF can still be used for the
         # training of the next trees
@@ -405,8 +417,20 @@ class GradientBoostingEnsemble:
           y_ensemble = np.delete(y_ensemble, selected_rows)
         else:
           early_stop_round = self.early_stop
+      else:
+        # This tree doesn't improve overall prediction quality, removing from
+        # model
+        # not reusing gradients in multi-class as they are class-dependent
+        update_gradients = self.loss_.is_multi_class
+        self.trees.pop()
+        if not self.use_dp:
+          early_stop_round -= 1
+          if early_stop_round == 0:
+            logger.info('Early stop kicked in. No improvement, stopping.')
+            break
 
     return self
+
 
   def Predict(self, X: np.array) -> np.array:
     """Predict values from the ensemble of gradient boosted trees.
@@ -427,6 +451,7 @@ class GradientBoostingEnsemble:
     init_score = self.init_score[:len(predictions)]
     return np.add(init_score, predictions)
 
+
   def PredictLabels(self, X: np.ndarray) -> np.ndarray:
     """Predict labels out of the raw prediction values of `Predict`.
        Only defined for classification tasks.
@@ -440,7 +465,7 @@ class GradientBoostingEnsemble:
     Raises:
       ValueError: If the loss function doesn't match the prediction task.
     """
-    if not isinstance(self.loss_, (MultinomialDeviance, BinomialDeviance)):
+    if not hasattr(self.loss_, '_raw_prediction_to_decision'):
       raise ValueError("Labels are not defined for regression tasks.")
 
     raw_predictions = self.Predict(X)
@@ -448,6 +473,7 @@ class GradientBoostingEnsemble:
     encoded_labels = self.loss_._raw_prediction_to_decision(raw_predictions)
     # pylint: enable=no-member,protected-access
     return encoded_labels
+
 
   def PredictProba(self, X: np.ndarray) -> np.ndarray:
     """Predict class probabilities for X.
@@ -461,7 +487,7 @@ class GradientBoostingEnsemble:
     Raises:
       ValueError: If the loss function doesn't match the prediction task.
     """
-    if not isinstance(self.loss_, (MultinomialDeviance, BinomialDeviance)):
+    if not hasattr(self.loss_, '_raw_prediction_to_proba'):
       raise ValueError("Labels are not defined for regression tasks.")
 
     raw_predictions = self.Predict(X)
@@ -639,7 +665,7 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
                privacy_budget: float,
                delta_g: float,
                delta_v: float,
-               loss: LossFunction,
+               loss: losses.LossFunction,
                max_depth: int = 6,
                max_leaves: Optional[int] = None,
                min_samples_split: int = 2,
@@ -681,9 +707,9 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       cat_idx (List): Optional. List of indices for categorical features.
       num_idx (List): Optional. List of indices for numerical features.
     """
-    assert type(loss) in [LeastSquaresError,
-                          MultinomialDeviance,
-                          BinomialDeviance]
+    assert type(loss) in [losses.ClippedLeastSquaresError,
+                          losses.ClippedMultinomialDeviance,
+                          losses.ClippedBinomialDeviance]
 
     self.root_node = None  # type: Optional[DecisionNode]
     self.nodes_bfs = Queue()  # type: Queue[DecisionNode]
@@ -1265,7 +1291,7 @@ def AddLaplacianNoise(leaves: List[DecisionNode],
 
 def ComputePredictions(gradients: np.ndarray,
                        y: np.ndarray,
-                       loss: LossFunction,
+                       loss: losses.LossFunction,
                        l2_lambda: float) -> float:
   """Computes the predictions of a leaf.
 
