@@ -18,12 +18,12 @@ class DPGBDT(BaseEstimator):  # type: ignore
   # pylint: disable=too-many-arguments, invalid-name
 
   def __init__(self,
-               clipping_bound : float,
                nb_trees: int,
                nb_trees_per_ensemble: int,
                max_depth: int,
                learning_rate: float,
                privacy_budget: Optional[float] = None,
+               clipping_bound : Optional[float] = None,
                early_stop: int = 5,
                n_classes: Optional[int] = None,
                max_leaves: Optional[int] = None,
@@ -46,6 +46,9 @@ class DPGBDT(BaseEstimator):  # type: ignore
       learning_rate (float): The learning rate.
       privacy_budget (float): Optional. The privacy budget to use. If `None`, do
           not apply differential privacy.
+      clipping_bound (float): Optional. The clipping bound used to limit the
+          influence of data points on the loss function If `None`, do not
+          perform clipping.
       early_stop (int): Optional. If the rmse doesn't decrease for <int>
           consecutive rounds, abort training. Default is 5.
       n_classes (int): Number of classes. Triggers regression (None) vs

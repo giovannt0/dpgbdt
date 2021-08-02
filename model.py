@@ -45,10 +45,10 @@ class GradientBoostingEnsemble:
   def __init__(self,
                nb_trees: int,
                nb_trees_per_ensemble: int,
-               clipping_bound: float,
                n_classes: Optional[int] = None,
                max_depth: int = 6,
-               privacy_budget: float = 1.0,
+               privacy_budget: Optional[float] = None,
+               clipping_bound: Optional[float] = None,
                learning_rate: float = 0.1,
                early_stop: int = 5,
                max_leaves: Optional[int] = None,
@@ -73,8 +73,8 @@ class GradientBoostingEnsemble:
       privacy_budget (float): Optional. The privacy budget available for the
           model. Default is 1.0. If `None`, do not apply differential privacy.
       clipping_bound (float): Optional. The clipping bound used to limit the
-          influence of data points on the loss function, in context of the
-          AboveThreshold mechanism.
+          influence of data points on the loss function If `None`, do not
+          perform clipping.
       learning_rate (float): Optional. The learning rate. Default is 0.1.
       early_stop (int): Optional. If the rmse doesn't decrease for <int>
           consecutive rounds, abort training. Default is 5.
@@ -129,11 +129,9 @@ class GradientBoostingEnsemble:
 
     if self.privacy_budget is None or self.privacy_budget == 0.0:
       logger.info(
-        'No privacy budget provided. Differential privacy is disabled. '
-        'Clipping_bound set to None.'
+        'No privacy budget provided. Differential privacy is disabled.'
       )
       self.use_dp = False
-      self.clipping_bound = None
     else:
       if self.privacy_budget > 100:
         logger.warning(
