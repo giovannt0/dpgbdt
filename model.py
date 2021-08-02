@@ -71,7 +71,7 @@ class GradientBoostingEnsemble:
           classification.
       max_depth (int): Optional. The depth for the trees. Default is 6.
       privacy_budget (float): Optional. The privacy budget available for the
-          model. Default is 1.0.
+          model. Default is 1.0. If `None`, do not apply differential privacy.
       clipping_bound (float): Optional. The clipping bound used to limit the
           influence of data points on the loss function, in context of the
           AboveThreshold mechanism.
@@ -127,20 +127,22 @@ class GradientBoostingEnsemble:
     self.num_idx = num_idx
     self.verbosity = verbosity
 
-    # Too high a privacy budget generates a bunch of overflows in the
-    # exponential mechanism. Better performances with lower orders of
-    # magnitudes. Note that if the aim is to disable DP, then the budget
-    # should be set to 0.
-    if self.privacy_budget > 100:
-      logger.warning('High privacy budget detected. If the aim is to '
-                     'deactivate differential privacy, then please set '
-                     'privacy_budget to 0. The budget has an upper of 1000 in '
-                     'all other cases.')
-    self.privacy_budget = min(self.privacy_budget, 1000)
-
-    self.use_dp = self.privacy_budget > 0  # Whether to use differential privacy
-    if not self.use_dp:
-      logger.warning('! ! ! Differential privacy disabled ! ! !')
+    if self.privacy_budget is None or self.privacy_budget == 0.0:
+      logger.info(
+        'No privacy budget provided. Differential privacy is disabled. '
+        'Clipping_bound set to None.'
+      )
+      self.use_dp = False
+      self.clipping_bound = None
+    else:
+      if self.privacy_budget > 100:
+        logger.warning(
+          'High privacy budget detected (budget > 100). This affects the '
+          'exponential mechanism badly. Note that the budget is limited to 1000 '
+          'anyway.'
+        )
+      self.use_dp = True
+      self.privacy_budget = min(self.privacy_budget, 1000)
 
     if self.use_3_trees and self.use_bfs:
       # Since we're building 3-node trees it's the same anyways.
@@ -150,17 +152,10 @@ class GradientBoostingEnsemble:
     # is the spine of the boosted trees.
     self.trees = []  # type: List[List[DifferentiallyPrivateTree]]
 
-    # classification vs regression
-    if self.n_classes is None:
-      self.loss_ = losses.ClippedLeastSquaresError(self.clipping_bound)
-    elif self.n_classes == 2: # binary classification
-      self.loss_ = losses.ClippedBinomialDeviance(
-        self.n_classes, self.clipping_bound
-      )
-    else: # multiary classification
-      self.loss_ = losses.ClippedMultinomialDeviance(
-        self.n_classes, self.clipping_bound
-      )
+    self.loss_ = _loss_initialisation(
+      n_classes = self.n_classes,
+      clipping_bound = self.clipping_bound
+    )
 
     self.init_ = self.loss_.init_estimator()
 
@@ -216,19 +211,20 @@ class GradientBoostingEnsemble:
     nb_ensembles = int(np.ceil(self.nb_trees / self.nb_trees_per_ensemble))
     logger.info('Model will have {0:d} ensembles'.format(nb_ensembles))
 
-    # Privacy budget allocated to all trees in each ensemble
-    tree_privacy_budget = np.divide(self.privacy_budget, nb_ensembles)
-    # In multi-class classification the budget for each tree
-    # is the same as for the whole K trees but halved
-    # As each data point is only assigned to one class,
-    # it only matters if it is assigned to the considered class or not but not
-    # to which other
-    # Thus it always remains 2 - independently of how many total classes exists
-    privacy_budget_per_tree = 2 if self.loss_.is_multi_class else 1
-    tree_privacy_budget = np.divide(
-        tree_privacy_budget, privacy_budget_per_tree)
+    if self.use_dp:
+      # Privacy budget allocated to all trees in each ensemble
+      tree_privacy_budget = np.divide(self.privacy_budget, nb_ensembles)
+      # In multi-class classification the budget for each tree
+      # is the same as for the whole K trees but halved
+      # As each data point is only assigned to one class,
+      # it only matters if it is assigned to the considered class or not but not
+      # to which other
+      # Thus it always remains 2 - independently of how many total classes exists
+      privacy_budget_per_tree = 2 if self.loss_.is_multi_class else 1
+      tree_privacy_budget = np.divide(
+          tree_privacy_budget, privacy_budget_per_tree)
 
-    prev_score = np.inf
+    prev_loss = np.inf
     early_stop_round = self.early_stop
 
     # Train all trees
@@ -244,7 +240,7 @@ class GradientBoostingEnsemble:
         # Initialize the dataset and the gradients
         X_ensemble = np.copy(X)
         y_ensemble = np.copy(y)
-        prev_score = np.inf
+        prev_loss = np.inf
         update_gradients = True
         # gradient initialization will happen later in the per-class-loop
 
@@ -372,7 +368,7 @@ class GradientBoostingEnsemble:
               self.learning_rate,
               self.l2_threshold,
               self.l2_lambda,
-              privacy_budget=0.,
+              privacy_budget = 0.0, # Legacy code (instead of None)
               delta_g=0.,
               delta_v=0.,
               loss=self.loss_,
@@ -390,20 +386,24 @@ class GradientBoostingEnsemble:
           k_trees.append(tree)
       self.trees.append(k_trees)
 
-      clipped_score = self.loss_(
+      # Depending on initialization of `loss_`, this might be clipped.
+      current_loss = self.loss_(
         y = y_test,
         raw_predictions = self.Predict(X_test)
       )
-      logger.info('Decision tree {0:d} fit. Current score: {1:f} - Best '
-                  'score so far: {2:f}'.format(tree_index, clipped_score, prev_score))
+      logger.info('Decision tree {0:d} fit. Current loss: {1:f} - Best '
+                  'loss so far: {2:f}'.format(tree_index, current_loss, prev_loss))
 
-      lap_noise = np.random.laplace(
-        scale = self.clipping_bound / (len(y_test) * self.privacy_budget)
-      )
-      above_threshold = clipped_score + lap_noise < prev_score
-      if above_threshold:
+      new_tree_is_usefull = current_loss < prev_loss
+      if self.use_dp:
+        lap_noise = np.random.laplace(
+          scale = self.clipping_bound / (len(y_test) * self.privacy_budget)
+        )
+        new_tree_is_usefull = current_loss + lap_noise < prev_loss
+
+      if new_tree_is_usefull:
         update_gradients = True
-        prev_score = clipped_score
+        prev_loss = current_loss
         # Remove the selected rows from the ensemble's dataset
         # The instances that were filtered out by GBF can still be used for the
         # training of the next trees
@@ -444,9 +444,11 @@ class GradientBoostingEnsemble:
       np.array of shape (n_samples, K): The predictions.
     """
     # sum across the ensemble per class
-    predictions = np.sum([[self.learning_rate * tree.Predict(X)
-                           for tree in k_trees] for k_trees in self.trees],
-                         axis=0).T
+    tree_predictions = [
+      [self.learning_rate * tree.Predict(X) for tree in k_trees]
+        for k_trees in self.trees
+    ]
+    predictions = np.sum(tree_predictions, axis=0).T
     assert self.init_score is not None
     init_score = self.init_score[:len(predictions)]
     return np.add(init_score, predictions)
@@ -515,6 +517,34 @@ class GradientBoostingEnsemble:
     # sklearn's impl is using the negative gradient (i.e. y - F).
     # Here the positive gradient is used though
     return -self.loss_.negative_gradient(y, y_pred, k=k)
+
+
+def _loss_initialisation(n_classes, clipping_bound):
+  if clipping_bound is None:
+    logger.info(
+      "Loss will not be clipped."
+    )
+    if n_classes is None:
+      logger.info('Number of classes is None. Selecting LSE loss.')
+      loss = losses.LOSS_FUNCTIONS['ls']()
+    elif n_classes == 2:
+      logger.info('Selecting binomial deviance loss.')
+      loss = losses.LOSS_FUNCTIONS['bin_dev'](n_classes)
+    else:
+      logger.info('Selecting multinomial deviance loss.')
+      loss = losses.LOSS_FUNCTIONS['mul_dev'](n_classes)
+  else:
+    if n_classes is None:
+      logger.info('Number of classes is None. Selecting clipped LSE loss.')
+      loss = losses.LOSS_FUNCTIONS['c_ls'](clipping_bound)
+    elif n_classes == 2:
+      logger.info('Selecting clipped binomial deviance loss.')
+      loss = losses.LOSS_FUNCTIONS['c_bin_dev'](n_classes, clipping_bound)
+    else:
+      logger.info('Selecting clipped multinomial deviance loss.')
+      loss = losses.LOSS_FUNCTIONS['c_mul_dev'](n_classes, clipping_bound)
+
+  return loss
 
 
 class DecisionNode:
@@ -707,9 +737,6 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
       cat_idx (List): Optional. List of indices for categorical features.
       num_idx (List): Optional. List of indices for numerical features.
     """
-    assert type(loss) in [losses.ClippedLeastSquaresError,
-                          losses.ClippedMultinomialDeviance,
-                          losses.ClippedBinomialDeviance]
 
     self.root_node = None  # type: Optional[DecisionNode]
     self.nodes_bfs = Queue()  # type: Queue[DecisionNode]
@@ -718,6 +745,7 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
     self.learning_rate = learning_rate
     self.l2_threshold = l2_threshold
     self.l2_lambda = l2_lambda
+    # For compatibility reasons, 0.0 means deactivating (instead of None)
     self.privacy_budget = privacy_budget
     self.delta_g = delta_g
     self.delta_v = delta_v
@@ -732,7 +760,8 @@ class DifferentiallyPrivateTree(BaseEstimator):  # type: ignore
     self.cat_idx = cat_idx
     self.num_idx = num_idx
 
-    self.use_dp = privacy_budget > 0.  # Use differential privacy or not
+    # Whether to apply DP.
+    self.use_dp = privacy_budget > 0.0
 
     # This handles attribute comparison depending on the attribute's nature
     self.feature_to_op = defaultdict(

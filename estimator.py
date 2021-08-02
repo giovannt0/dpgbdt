@@ -18,12 +18,12 @@ class DPGBDT(BaseEstimator):  # type: ignore
   # pylint: disable=too-many-arguments, invalid-name
 
   def __init__(self,
-               privacy_budget: float,
                clipping_bound : float,
                nb_trees: int,
                nb_trees_per_ensemble: int,
                max_depth: int,
                learning_rate: float,
+               privacy_budget: Optional[float] = None,
                early_stop: int = 5,
                n_classes: Optional[int] = None,
                max_leaves: Optional[int] = None,
@@ -40,11 +40,12 @@ class DPGBDT(BaseEstimator):  # type: ignore
     """Initialize the wrapper.
 
     Args:
-      privacy_budget (float): The privacy budget to use.
       nb_trees (int): The number of trees in the model.
       nb_trees_per_ensemble (int): The number of trees per ensemble.
       max_depth (int): The max depth for the trees.
       learning_rate (float): The learning rate.
+      privacy_budget (float): Optional. The privacy budget to use. If `None`, do
+          not apply differential privacy.
       early_stop (int): Optional. If the rmse doesn't decrease for <int>
           consecutive rounds, abort training. Default is 5.
       n_classes (int): Number of classes. Triggers regression (None) vs
@@ -78,7 +79,6 @@ class DPGBDT(BaseEstimator):  # type: ignore
           is -1, meaning only warnings and above are displayed. 0 is info,
           1 is debug.
     """
-    self.privacy_budget = privacy_budget
     self.clipping_bound = clipping_bound
     self.nb_trees = nb_trees
     self.nb_trees_per_ensemble = nb_trees_per_ensemble
@@ -88,6 +88,7 @@ class DPGBDT(BaseEstimator):  # type: ignore
     self.gradient_filtering = gradient_filtering
     self.leaf_clipping = leaf_clipping
     self.learning_rate = learning_rate
+    self.privacy_budget = privacy_budget
     self.early_stop = early_stop
     self.n_classes = n_classes
     self.balance_partition = balance_partition
@@ -148,11 +149,12 @@ class DPGBDT(BaseEstimator):  # type: ignore
       np.array: The predictions.
     """
     assert self.model_
-    # try classification output first,
-    # o.w. fallback to the raw regression values
-    try:
+    # try classification output first, otherwise fallback to the raw regression
+    # values
+    if self.n_classes is not None:
+      assert isinstance(self.n_classes, int)
       return self.model_.PredictLabels(X)
-    except ValueError:
+    else:
       return self.model_.Predict(X).squeeze()
 
   def predict_proba(self, X: np.array) -> np.array:
