@@ -7,8 +7,6 @@ from sklearn.ensemble._gb_losses import (BinomialDeviance, LeastSquaresError,
 
 import logger as logging
 
-logging.SetUpLogger(__name__)
-logger = logging.GetLogger(__name__)
 
 class ClippedLeastSquaresError(LeastSquaresError):
     """Loss function for clipped least squares (LS) estimation.
@@ -27,10 +25,6 @@ class ClippedLeastSquaresError(LeastSquaresError):
     def __init__(self, clipping_bound):
         super(ClippedLeastSquaresError, self).__init__()
         self.clipping_bound = clipping_bound
-        logger.debug(
-            "Set up clipped least squares error using clipping bound c = %f",
-            self.clipping_bound
-        )
 
     def __call__(self, y, raw_predictions, sample_weight = None):
         """Compute the clipped least squares loss.
@@ -74,6 +68,10 @@ class ClippedMultinomialDeviance(MultinomialDeviance):
         raise NotImplementedError()
 
 LOSS_FUNCTIONS = {
-    'ls': ClippedLeastSquaresError,
-    'deviance': None,  # for both, multinomial and binomial
+    'ls'       : LeastSquaresError,
+    'c_ls'      : ClippedLeastSquaresError,
+    'bin_dev'  : BinomialDeviance,
+    'c_bin_dev' : ClippedBinomialDeviance,
+    'mul_dev'  : MultinomialDeviance,
+    'c_mul_dev' : ClippedMultinomialDeviance
 }
