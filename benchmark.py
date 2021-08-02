@@ -50,8 +50,7 @@ def cross_validate(parameters, X, y, filename):
   #   learning_rate= 0.1
   # )
   dummy_estimator = estimator.DPGBDT(
-    privacy_budget = 0.0,
-    clipping_bound = 0.0,
+    clipping_bound = None,
     nb_trees = 0,
     nb_trees_per_ensemble = 0,
     max_depth = 0,
@@ -61,7 +60,7 @@ def cross_validate(parameters, X, y, filename):
     estimator = dummy_estimator,
     param_grid = parameters,
     scoring = "neg_root_mean_squared_error",
-    n_jobs = 58,
+    n_jobs = 60,
     cv = model_selection.RepeatedKFold(n_splits = 5, n_repeats = 10),
     verbose = 2
   )
@@ -69,7 +68,7 @@ def cross_validate(parameters, X, y, filename):
   df = pd.DataFrame(best_model.cv_results_)
   df.to_csv(filename)
 
-if __name__ == '__main__':
+def cv_clipping():
   X, y, cat_idx, num_idx = get_abalone()
   privacy_budget = np.append(
     np.linspace(0.1, 0.9, num = 9),
@@ -101,3 +100,20 @@ if __name__ == '__main__':
       **common_params
   )
   cross_validate(three_trees_parameters, X, y, "use_3_trees_5-fold-RMSE.csv")
+
+def cv_no_dp():
+  X, y, cat_idx, num_idx = get_abalone()
+  common_params = dict(
+    privacy_budget = [None],
+    clipping_bound = [1000000000000.0],
+    nb_trees = [50],
+    nb_trees_per_ensemble = [50],
+    max_depth = [6],
+    learning_rate = [0.1],
+    cat_idx = [cat_idx],
+    num_idx = [num_idx]
+  )
+  cross_validate(common_params, X, y, "no_dp.csv")
+
+if __name__ == '__main__':
+  cv_clipping()
